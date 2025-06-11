@@ -1,11 +1,10 @@
 import numpy as np
 import pandas as pd
+import pandas_ta as pta
 from pandas import DataFrame
 import talib.abstract as ta
-from freqtrade.strategy import IStrategy, merge_informative_pair
+from freqtrade.strategy import IStrategy
 from freqtrade.strategy import CategoricalParameter, DecimalParameter, IntParameter
-# from ta.trend import DonchianIndicator
-
 from datetime import datetime
 import logging
 
@@ -45,45 +44,41 @@ class JohnWickSniperStrategy(IStrategy):
     leverage_num = IntParameter(1, 10, default=3, space="protection")
     margin_mode = CategoricalParameter(['isolated', 'cross'], default='isolated', space="protection")
 
-    def informative_pairs(self):
-        """
-        Definiše informativne timeframe-ove za 5m i 1m.
-        """
-        pairs = self.dp.current_whitelist()
-        informative_pairs = [(pair, "5m") for pair in pairs] + [(pair, "1m") for pair in pairs]
-        return informative_pairs
+    # def informative_pairs(self):
+    # """
+    # Definiše informativne timeframe-ove za 5m i 1m.
+    # """
+    # pairs = self.dp.current_whitelist()
+    # informative_pairs = [(pair, "5m") for pair in pairs] + [(pair, "1m") for pair in pairs]
+    # return informative_pairs
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Dodaj ovo da vidiš koje kolone postoje pre izračunavanja
-        print("Dostupne kolone u DataFrame-u:", dataframe.columns.tolist())
-        """
-        Dodaje tehničke indikatore u dataframe, uključujući ATR i Volume Spike.
-        """
-        try:
-            # Informative dataframe-ovi za 5m i 1m
-            for timeframe in self.informative_timeframes:
-                informative = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe=timeframe)
-                dataframe = merge_informative_pair(dataframe, informative, self.timeframe, timeframe, ffill=True)
+        # Informative dataframe-ovi za 5m i 1m
+        # Ova logika ostaje ista
+        for timeframe in self.informative_timeframes:
+            informative = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe=timeframe)
+            # Ovde dodajemo sufiks da bismo razlikovali kolone (npr. close_5m)
+            # Ovo je dobra praksa, ali merge_informative_pair to radi automatski
+            dataframe = merge_informative_pair(dataframe, informative, self.timeframe, timeframe, ffill=True)
 
-            # # Donchian Channel za LONG
-            donchian_channel = self.donchian_period.value
-            dataframe['dc_upper'] = donchian_channel['upper']
-            dataframe['dc_lower'] = donchian_channel['lower']
+            # Donchian Channel - ISPRAVLJENO KORIŠĆENJEM PANDAS-TA
+            # pta.donchian() vraća DataFrame sa kolonama npr. 'DCU_20', 'DCL_20'
+            # Moramo ih preimenovati ili direktno dodeliti.
+            donchian_df = pta.donchian(high=dataframe['high'], low=dataframe['low'], close=dataframe['close'],
+                                       length=self.donchian_period.value)
 
-            # # Donchian Channel za LONG
-            # period = self.donchian_period.value
-            # dataframe['dc_upper'] = dataframe['high'].rolling(window=period, min_periods=period).max()
-            # dataframe['dc_lower'] = dataframe['low'].rolling(window=period, min_periods=period).min()
-            # dataframe['dc_middle'] = (dataframe['dc_upper'] + dataframe['dc_lower']) / 2.0
+            # Nazivi kolona koje generiše pandas-ta zavise od perioda (npr. DCU_20)
+            # Zato koristimo f-string da dinamički kreiramo naziv.
+            upper_channel_name = f'DCU_{self.donchian_period.value}'
+            lower_channel_name = f'DCL_{self.donchian_period.value}'
 
-            # # Donchian Channel za LONG
-            # donchian_channel = donchian(dataframe, period=self.donchian_period.value)
-            # dataframe['dc_upper'] = donchian_channel['upper']
-            # dataframe['dc_lower'] = donchian_channel['lower']
+            # Dodajemo kolone u glavni dataframe sa nazivima koje strategija očekuje
+            dataframe['dc_upper'] = donchian_df[upper_channel_name]
+            dataframe['dc_lower'] = donchian_df[lower_channel_name]
 
-            # Proveri da li su kolone kreirane
-            if dataframe['dc_upper'].isna().all() or dataframe['dc_lower'].isna().all():
-                print(f"WARNING: Donchian Channels nisu ispravno izračunati za {metadata['pair']}")
+            # return dataframe
+            # if dataframe['dc_upper'].isna().all() or dataframe['dc_lower'].isna().all():
+            # print(f"WARNING: Donchian Channels nisu ispravno izračunati za {metadata['pair']}")
 
             # ADX za snagu trenda
             dataframe['adx'] = talib.ADX(dataframe['high'], dataframe['low'], dataframe['close'],
@@ -130,10 +125,11 @@ class JohnWickSniperStrategy(IStrategy):
             )
 
             dataframe.fillna(method='ffill', inplace=True)
-            return dataframe
 
-        except Exception as e:
-            print(f"Greška u populate_indicators: {e}")
+            return dataframe
+            # if dataframe['dc_upper'].isna().all() or dataframe['dc_lower'].isna().all():
+            print(f"WARNING: Donchian Channels nisu ispravno izračunati za {metadata['pair']}")
+
             return dataframe
 
     def detect_hammer(self, dataframe: DataFrame) -> pd.Series:
@@ -235,26 +231,3 @@ class JohnWickSniperStrategy(IStrategy):
             print(f"Greška u confirm_trade_entry: {e}")
             return False
 
-    # def leverage(self, pair: str, current_time: datetime, current_rate: float,
-    # proposed_leverage: float, max_leverage: float, side: str, **kwargs) -> float:
-    # return min(int(self.leverage_num.value), max_leverage)
-
-    # def adjust_leverage(self, pair: str, side: str):
-    # try:
-    # exchange = self.dp._exchange
-    # leverage = int(self.leverage_num.value)
-    # margin_mode = str(self.margin_mode.value).lower()
-
-    # exchange.set_margin_mode(margin_mode, pair)
-    # exchange.set_leverage(leverage, pair)
-
-    # logger.info(f"Leverage postavljen: {margin_mode} {leverage}x za {pair}")
-
-    # except Exception as e:
-    # logger.error(f"Greška u leverage za {pair}: {e}")
-
-    # def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
-    # time_in_force: str, current_time: datetime, entry_tag: str,
-    # side: str, **kwargs) -> bool:
-    # self.adjust_leverage(pair, side)
-    # return True
