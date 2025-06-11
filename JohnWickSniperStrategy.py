@@ -136,11 +136,9 @@ class JohnWickSniperStrategy(IStrategy):
                 (dataframe['volume'] > dataframe['volume'].rolling(20).mean() * 0.8),
                 'enter_short'] = 1
 
-        if ":USDT" not in pair:
-            return dataframe
         except Exception as e:
-        print(f"Greška u populate_entry_trend: {str(e)}")
-        return dataframe
+            print(f"Greška u populate_entry_trend: {str(e)}")
+            return dataframe
 
 
 def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
