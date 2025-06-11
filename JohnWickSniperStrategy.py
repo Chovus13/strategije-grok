@@ -4,7 +4,8 @@ from pandas import DataFrame
 import talib.abstract as ta
 from freqtrade.strategy import IStrategy, merge_informative_pair
 from freqtrade.strategy import CategoricalParameter, DecimalParameter, IntParameter
-# from technical.indicators import donchian
+# from ta.trend import DonchianIndicator
+
 from datetime import datetime
 import logging
 
@@ -42,8 +43,7 @@ class JohnWickSniperStrategy(IStrategy):
 
     # Leverage parametri
     leverage_num = IntParameter(1, 10, default=3, space="protection")
-    margin_mode = CategoricalParameter(['isolated', 'cross'],
-                                       default='isolated', space="protection")
+    margin_mode = CategoricalParameter(['isolated', 'cross'], default='isolated', space="protection")
 
     def informative_pairs(self):
         """
@@ -54,20 +54,36 @@ class JohnWickSniperStrategy(IStrategy):
         return informative_pairs
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        # Dodaj ovo da vidiš koje kolone postoje pre izračunavanja
+        print("Dostupne kolone u DataFrame-u:", dataframe.columns.tolist())
         """
         Dodaje tehničke indikatore u dataframe, uključujući ATR i Volume Spike.
         """
         try:
-
             # Informative dataframe-ovi za 5m i 1m
             for timeframe in self.informative_timeframes:
                 informative = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe=timeframe)
-                dataframe = merge_informative_pair(dataframe, informative, timeframe, 1, ffill=True)
+                dataframe = merge_informative_pair(dataframe, informative, self.timeframe, timeframe, ffill=True)
 
-            # Donchian Channel za LONG
-            donchian_channel = donchian(dataframe, period=self.donchian_period.value)
+            # # Donchian Channel za LONG
+            donchian_channel = self.donchian_period.value
             dataframe['dc_upper'] = donchian_channel['upper']
             dataframe['dc_lower'] = donchian_channel['lower']
+
+            # # Donchian Channel za LONG
+            # period = self.donchian_period.value
+            # dataframe['dc_upper'] = dataframe['high'].rolling(window=period, min_periods=period).max()
+            # dataframe['dc_lower'] = dataframe['low'].rolling(window=period, min_periods=period).min()
+            # dataframe['dc_middle'] = (dataframe['dc_upper'] + dataframe['dc_lower']) / 2.0
+
+            # # Donchian Channel za LONG
+            # donchian_channel = donchian(dataframe, period=self.donchian_period.value)
+            # dataframe['dc_upper'] = donchian_channel['upper']
+            # dataframe['dc_lower'] = donchian_channel['lower']
+
+            # Proveri da li su kolone kreirane
+            if dataframe['dc_upper'].isna().all() or dataframe['dc_lower'].isna().all():
+                print(f"WARNING: Donchian Channels nisu ispravno izračunati za {metadata['pair']}")
 
             # ADX za snagu trenda
             dataframe['adx'] = talib.ADX(dataframe['high'], dataframe['low'], dataframe['close'],
