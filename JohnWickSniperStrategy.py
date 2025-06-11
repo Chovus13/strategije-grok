@@ -4,22 +4,22 @@ from pandas import DataFrame
 import talib
 from freqtrade.strategy import IStrategy, merge_informative_pair
 from freqtrade.strategy import CategoricalParameter, DecimalParameter, IntParameter
-from freqtrade.strategy import StoplossGuard
 from technical.indicators import donchian
 from datetime import datetime
 
 
 class JohnWickSniperStrategy(IStrategy):
-    #
+    """
+    V1 verzija scalping strategije za Freqtrade na 15m timeframe-u.
+    Koristi 5m i 1m kandele za potvrdu trenda, Hammer/Reverse Hammer svijeće,
+    Donchian+ADX za LONG, Bollinger+RSI za SHORT.
+    """
 
     # Osnovni parametri
-
     timeframe = "15m"
     informative_timeframes = ["5m", "1m"]
-
     minimal_roi = {"0": 0.02}  # 2% ROI
     stoploss = -0.015  # Fiksni stop-loss od 1.5%
-
     trailing_stop = True
     trailing_stop_positive = 0.01  # 1% pozitivni offset
     trailing_stop_positive_offset = 0.015  # 1.5% za pokretanje trailing stop-a
@@ -52,32 +52,34 @@ class JohnWickSniperStrategy(IStrategy):
                 dataframe = merge_informative_pair(dataframe, informative, timeframe, 1, ffill=True)
 
             # Donchian Channel za LONG
-            donchian_channel = donchian(dataframe, period=self.donchian_period.value)
+            donchian_channel = donchian(dataframe, period=int(self.donchian_period.value))
             dataframe['dc_upper'] = donchian_channel['upper']
             dataframe['dc_lower'] = donchian_channel['lower']
 
             # ADX za snagu trenda
             dataframe['adx'] = talib.ADX(dataframe['high'], dataframe['low'], dataframe['close'],
-                                         timeperiod=self.adx_period.value)
+                                         timeperiod=int(self.adx_period.value))
 
             # Bollinger Bands za SHORT
             dataframe['bb_upper'], dataframe['bb_middle'], dataframe['bb_lower'] = talib.BBANDS(
-                dataframe['close'], timeperiod=self.bb_period.value, nbdevup=self.bb_std.value,
+                dataframe['close'], timeperiod=int(self.bb_period.value), nbdevup=self.bb_std.value,
                 nbdevdn=self.bb_std.value
             )
 
             # RSI za prekupljenost
-            dataframe['rsi'] = talib.RSI(dataframe['close'], timeperiod=self.rsi_period.value)
+            dataframe['rsi'] = talib.RSI(dataframe['close'], timeperiod=int(self.rsi_period.value))
 
             # Hammer i Reverse Hammer svijeće na 15m
             dataframe['hammer'] = self.detect_hammer(dataframe)
             dataframe['reverse_hammer'] = self.detect_reverse_hammer(dataframe)
 
-            # Hammer i Reverse Hammer na 5m i 1m
-            dataframe['hammer_5m'] = self.detect_hammer(dataframe.select_plottable().copy())
-            dataframe['reverse_hammer_5m'] = self.detect_reverse_hammer(dataframe.select_plottable().copy())
-            dataframe['hammer_1m'] = self.detect_hammer(dataframe.select_plottable().copy())
-            dataframe['reverse_hammer_1m'] = self.detect_reverse_hammer(dataframe.select_plottable().copy())
+            # Hammer i Reverse Hammer na 5m i 1m (koristi informativne podatke)
+            dataframe['hammer_5m'] = self.detect_hammer(dataframe.loc[:, (slice(None), "5m")].droplevel(1))
+            dataframe['reverse_hammer_5m'] = self.detect_reverse_hammer(
+                dataframe.loc[:, (slice(None), "5m")].droplevel(1))
+            dataframe['hammer_1m'] = self.detect_hammer(dataframe.loc[:, (slice(None), "1m")].droplevel(1))
+            dataframe['reverse_hammer_1m'] = self.detect_reverse_hammer(
+                dataframe.loc[:, (slice(None), "1m")].droplevel(1))
 
             return dataframe
 
@@ -85,7 +87,7 @@ class JohnWickSniperStrategy(IStrategy):
             print(f"Greška u populate_indicators: {e}")
             return dataframe
 
-    # @staticmethod
+    @staticmethod
     def detect_hammer(dataframe: DataFrame) -> pd.Series:
         """Detektuje Hammer svijeću (bullish) kao statičku metodu."""
         body = abs(dataframe['close'] - dataframe['open'])
@@ -95,7 +97,7 @@ class JohnWickSniperStrategy(IStrategy):
                                                                   dataframe['open'])
         return (lower_wick > 2 * body) & (upper_wick < 0.5 * body) & (dataframe['close'] > dataframe['open'])
 
-    # @staticmethod
+    @staticmethod
     def detect_reverse_hammer(dataframe: DataFrame) -> pd.Series:
         """Detektuje Reverse Hammer svijeću (bearish) kao statičku metodu."""
         body = abs(dataframe['close'] - dataframe['open'])
@@ -166,8 +168,3 @@ class JohnWickSniperStrategy(IStrategy):
         except Exception as e:
             print(f"Greška u confirm_trade_entry: {e}")
             return False
-
-# Dodaj logger ako želiš (opciono za V1)
-# import logging
-
-# logger = logging.getLogger(__name__)
