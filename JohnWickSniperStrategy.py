@@ -1,15 +1,19 @@
-from freqtrade.strategy import IStrategy
-from freqtrade.strategy import CategoricalParameter, DecimalParameter, IntParameter
 import numpy as np
-import talib.abstract as ta
-from pandas import DataFrame
 import pandas as pd
+from pandas import DataFrame
+import talib.abstract as ta
+from freqtrade.strategy import IStrategy
+from freqtrade.strategy import (CategoricalParameter, DecimalParameter,
+                                IntParameter)
 from datetime import datetime
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class JohnWickSniperStrategy(IStrategy):
     """
-    V2 verzija strategije sa ispravljenim indikatorima i signalima
+    V4 verzija sa ispravljenim USDT futures podrškom i leverage sistemom
     """
 
     timeframe = "15m"
@@ -21,9 +25,6 @@ class JohnWickSniperStrategy(IStrategy):
     trailing_stop_positive = 0.01
     trailing_stop_positive_offset = 0.015
 
-    leverage_num = IntParameter(1, 10, default=3, space='protection')
-    margin_mode = CategoricalParameter(['isolated', 'cross'], default='isolated', space='protection')
-
     # Optimizacioni parametri
     donchian_period = IntParameter(10, 30, default=20, space="buy")
     adx_period = IntParameter(10, 20, default=14, space="buy")
@@ -33,12 +34,19 @@ class JohnWickSniperStrategy(IStrategy):
     rsi_period = IntParameter(10, 20, default=14, space="sell")
     rsi_sell = DecimalParameter(60, 80, default=70, space="sell")
 
+    # Leverage parametri
+    leverage_num = IntParameter(1, 10, default=3, space="protection")
+    margin_mode = CategoricalParameter(['isolated', 'cross'],
+                                       default='isolated', space="protection")
+
     def informative_pairs(self):
-        pairs = self.dp.current_whitelist()
-        informative_pairs = [(pair, tf) for pair in pairs for tf in self.informative_timeframes]
-        return informative_pairs
+        pairs = [p for p in self.dp.current_whitelist() if ":USDT" in p]
+        return [(pair, tf) for pair in pairs for tf in self.informative_timeframes]
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        if ":USDT" not in metadata['pair']:
+            return dataframe
+
         try:
             # Donchian Channel
             period = int(self.donchian_period.value)
@@ -50,7 +58,8 @@ class JohnWickSniperStrategy(IStrategy):
 
             # Bollinger Bands
             bb = ta.BBANDS(dataframe, timeperiod=int(self.bb_period.value),
-                           nbdevup=float(self.bb_std.value), nbdevdn=float(self.bb_std.value))
+                           nbdevup=float(self.bb_std.value),
+                           nbdevdn=float(self.bb_std.value))
             dataframe['bb_upper'] = bb['upperband']
             dataframe['bb_middle'] = bb['middleband']
             dataframe['bb_lower'] = bb['lowerband']
@@ -58,40 +67,26 @@ class JohnWickSniperStrategy(IStrategy):
             # RSI
             dataframe['rsi'] = ta.RSI(dataframe, timeperiod=int(self.rsi_period.value))
 
-            # Hammer i Reverse Hammer detekcija
+            # Hammer i Reverse Hammer
             dataframe['hammer'] = self.detect_hammer(dataframe)
             dataframe['reverse_hammer'] = self.detect_reverse_hammer(dataframe)
 
-            # Informativni timeframe-ovi - ISPRAVLJENA VERZIJA
+            # Informativni timeframe-ovi
             for tf in self.informative_timeframes:
-                informative = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe=tf)
+                informative = self.dp.get_pair_dataframe(
+                    pair=metadata['pair'], timeframe=tf)
 
-                # Resetuj indeks da bismo imali 'date' kolonu
-                informative = informative.reset_index()
-
-                # Detekcija formacija
                 informative['hammer'] = self.detect_hammer(informative)
                 informative['reverse_hammer'] = self.detect_reverse_hammer(informative)
 
-                # Selektuj samo potrebne kolone
                 informative = informative[['date', 'hammer', 'reverse_hammer']].copy()
-
-                # Preimenuj kolone sa timeframe sufiksom
                 informative.columns = ['date', f'hammer_{tf}', f'reverse_hammer_{tf}']
-
-                # Spoji sa glavnim dataframe-om
                 dataframe = dataframe.merge(informative, on='date', how='left')
 
-            print(f"\nIndikatori za {metadata['pair']}:")
-            print(f"Donchian Upper: {dataframe['dc_upper'].iloc[-1]}")
-            print(f"ADX: {dataframe['adx'].iloc[-1]}")
-            print(f"Hammer (15m): {dataframe['hammer'].iloc[-1]}")
-            print(f"Hammer (5m): {dataframe['hammer_5m'].iloc[-1]}")
-            print(f"Hammer (1m): {dataframe['hammer_1m'].iloc[-1]}")
-
             return dataframe
+
         except Exception as e:
-            print(f"Greška u populate_indicators: {str(e)}")
+            logger.error(f"Greška u indikatorima za {metadata['pair']}: {e}")
             return dataframe
 
     @staticmethod
@@ -140,69 +135,41 @@ class JohnWickSniperStrategy(IStrategy):
             print(f"Greška u populate_entry_trend: {str(e)}")
             return dataframe
 
+    def leverage(self, pair: str, current_time: datetime, current_rate: float,
+                 proposed_leverage: float, max_leverage: float, side: str, **kwargs) -> float:
+        return min(int(self.leverage_num.value), max_leverage)
 
-def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
-                        time_in_force: str, current_time: datetime, entry_tag: str,
-                        side: str, **kwargs) -> bool:
-    """
-    Potvrda trade-a sa podešavanjem leverage-a
-    """
-    try:
-        # Provera osnovnih uslova
-        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-        last_candle = dataframe.iloc[-1].squeeze()
+    def adjust_leverage(self, pair: str, side: str):
+        try:
+            exchange = self.dp._exchange
+            leverage = int(self.leverage_num.value)
+            margin_mode = str(self.margin_mode.value).lower()
 
-        if not all(col in last_candle for col in ['dc_upper', 'adx', 'rsi']):
-            return False
+            exchange.set_margin_mode(margin_mode, pair)
+            exchange.set_leverage(leverage, pair)
 
-        # Podesi leverage prema strategiji
+            logger.info(f"Leverage postavljen: {margin_mode} {leverage}x za {pair}")
+
+        except Exception as e:
+            logger.error(f"Greška u leverage za {pair}: {e}")
+
+    def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
+                            time_in_force: str, current_time: datetime, entry_tag: str,
+                            side: str, **kwargs) -> bool:
         self.adjust_leverage(pair, side)
-
-        # Dodatne provere
-        if side == 'long':
-            if not (last_candle['close'] > last_candle['dc_upper'] and
-                    last_candle['adx'] > float(self.adx_threshold.value)):
-                return False
-        else:
-            if not (last_candle['close'] > last_candle['bb_upper'] and
-                    last_candle['rsi'] > float(self.rsi_sell.value)):
-                return False
-
         return True
 
-    except Exception as e:
-        print(f"Greška u confirm_trade_entry: {e}")
-        return False
+    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        # Izlaz iz LONG-a
+        dataframe.loc[
+            (dataframe['reverse_hammer'] == True) &
+            ((dataframe['reverse_hammer_5m'] == True) | (dataframe['reverse_hammer_1m'] == True)),
+            'exit_long'] = 1
 
+        # Izlaz iz SHORT-a
+        dataframe.loc[
+            (dataframe['hammer'] == True) &
+            ((dataframe['hammer_5m'] == True) | (dataframe['hammer_1m'] == True)),
+            'exit_short'] = 1
 
-def leverage(self, pair: str, current_time: datetime, current_rate: float,
-             proposed_leverage: float, max_leverage: float, side: str, **kwargs) -> float:
-    if not hasattr(self, 'leverage_num'):
-        self.leverage_num = 3  # Default vrednost
-    return min(self.leverage_num, max_leverage)
-
-
-def adjust_leverage(self, pair: str, side: str):
-    try:
-        leverage = self.leverage(pair, datetime.now(), 0, 0, 25, side)
-        self.dp._exchange.set_margin_mode('isolated', pair)
-        self.dp._exchange.set_leverage(leverage, pair)
-        print(f"Leverage postavljen na {leverage}x za {pair}")
-    except Exception as e:
-        print(f"Greška pri podešavanju leverage-a: {e}")
-
-
-def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-    # Izlaz iz LONG-a
-    dataframe.loc[
-        (dataframe['reverse_hammer'] == True) &
-        ((dataframe['reverse_hammer_5m'] == True) | (dataframe['reverse_hammer_1m'] == True)),
-        'exit_long'] = 1
-
-    # Izlaz iz SHORT-a
-    dataframe.loc[
-        (dataframe['hammer'] == True) &
-        ((dataframe['hammer_5m'] == True) | (dataframe['hammer_1m'] == True)),
-        'exit_short'] = 1
-
-    return dataframe
+        return dataframe
