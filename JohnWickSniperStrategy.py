@@ -1,9 +1,9 @@
-import numpy as np
-import pandas as pd
-from pandas import DataFrame
-import talib.abstract as ta
 from freqtrade.strategy import IStrategy
 from freqtrade.strategy import CategoricalParameter, DecimalParameter, IntParameter
+import numpy as np
+import talib.abstract as ta
+from pandas import DataFrame
+import pandas as pd
 from datetime import datetime
 
 
@@ -20,6 +20,9 @@ class JohnWickSniperStrategy(IStrategy):
     trailing_stop = True
     trailing_stop_positive = 0.01
     trailing_stop_positive_offset = 0.015
+
+    leverage_num = IntParameter(1, 10, default=3, space='protection')
+    margin_mode = CategoricalParameter(['isolated', 'cross'], default='isolated', space='protection')
 
     # Optimizacioni parametri
     donchian_period = IntParameter(10, 30, default=20, space="buy")
@@ -79,29 +82,14 @@ class JohnWickSniperStrategy(IStrategy):
                 # Spoji sa glavnim dataframe-om
                 dataframe = dataframe.merge(informative, on='date', how='left')
 
-            print(f"BTC/USDT Poslednji candle:")
-            print(f"Close: {dataframe['close'].iloc[-1]}")
-            print(f"DC Upper: {dataframe['dc_upper'].iloc[-1]}")
+            print(f"\nIndikatori za {metadata['pair']}:")
+            print(f"Donchian Upper: {dataframe['dc_upper'].iloc[-1]}")
             print(f"ADX: {dataframe['adx'].iloc[-1]}")
-            print(f"RSI: {dataframe['rsi'].iloc[-1]}")
-            print(f"BB Upper: {dataframe['bb_upper'].iloc[-1]}")
-            print(f"Volume: {dataframe['volume'].iloc[-1]}")
-            print(f"Avg Volume: {dataframe['volume'].rolling(20).mean().iloc[-1]}")
-
-            lev = self.leverage(metadata['pair'], datetime.now(), dataframe['close'].iloc[-1],
-                                3, 5, 'long' if dataframe['hammer'].iloc[-1] else 'short')
-
-            print(f"Calculated leverage for {metadata['pair']}: {lev}x")
-
-            if self.dp.runmode.value in ('backtest', 'hyperopt'):
-                dataframe['funding_rate'] = 0  # Mock za backtest
-            else:
-                # Uzmi stvarne funding rate-ove za futures
-                fr = self.dp.exchange.get_funding_rate(metadata['pair'])
-                dataframe['funding_rate'] = fr['rate'] if fr else 0
+            print(f"Hammer (15m): {dataframe['hammer'].iloc[-1]}")
+            print(f"Hammer (5m): {dataframe['hammer_5m'].iloc[-1]}")
+            print(f"Hammer (1m): {dataframe['hammer_1m'].iloc[-1]}")
 
             return dataframe
-
         except Exception as e:
             print(f"Greška u populate_indicators: {str(e)}")
             return dataframe
@@ -148,144 +136,75 @@ class JohnWickSniperStrategy(IStrategy):
                 (dataframe['volume'] > dataframe['volume'].rolling(20).mean() * 0.8),
                 'enter_short'] = 1
 
+        if ":USDT" not in pair:
             return dataframe
         except Exception as e:
-            print(f"Greška u populate_entry_trend: {str(e)}")
-            return dataframe
-
-    def leverage(self, pair: str, current_time: datetime, current_rate: float,
-                 proposed_leverage: float, max_leverage: float, side: str, **kwargs) -> float:
-        """
-        Dinamičko podešavanje leverage-a sa proverom exchange ograničenja
-        """
-        # Postavi osnovne vrednosti
-        self.leverage_num = IntParameter(1, 10, default=3, space='protection')
-        self.margin_mode = CategoricalParameter(['isolated', 'cross'], default='isolated', space='protection')
-
-        try:
-            # Provera da li je futures pair
-            if ":USDT" not in pair:
-                return 1.0
-
-            # Dinamički leverage based na volatilnosti
-            dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-            if len(dataframe) < 20:
-                return min(3.0, max_leverage)
-
-            # ATR-based leverage
-            atr = ta.ATR(dataframe, timeperiod=14).iloc[-1]
-            current_price = dataframe['close'].iloc[-1]
-            atr_pct = (atr / current_price) * 100
-
-            if atr_pct < 1.5:
-                leverage = min(5.0, max_leverage)
-            elif atr_pct < 3.0:
-                leverage = min(3.0, max_leverage)
-            else:
-                leverage = min(1.5, max_leverage)
-
-            # Postavi vrednosti za kasnije korišćenje u confirm_trade_entry
-            self.leverage_num.value = leverage
-            return leverage
-
-        except Exception as e:
-            print(f"Greška u leverage funkciji: {e}")
-            return min(3.0, max_leverage)
-
-    def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
-                            time_in_force: str, current_time: datetime, entry_tag: str,
-                            side: str, **kwargs) -> bool:
-        """
-        Potvrda trade-a sa podešavanjem leverage-a
-        """
-        try:
-            # Provera osnovnih uslova
-            dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-            last_candle = dataframe.iloc[-1].squeeze()
-
-            if not all(col in last_candle for col in ['dc_upper', 'adx', 'rsi']):
-                return False
-
-            # Podesi leverage prema strategiji
-            self.adjust_leverage(pair, side)
-
-            # Dodatne provere
-            if side == 'long':
-                if not (last_candle['close'] > last_candle['dc_upper'] and
-                        last_candle['adx'] > float(self.adx_threshold.value)):
-                    return False
-            else:
-                if not (last_candle['close'] > last_candle['bb_upper'] and
-                        last_candle['rsi'] > float(self.rsi_sell.value)):
-                    return False
-
-            return True
-
-        except Exception as e:
-            print(f"Greška u confirm_trade_entry: {e}")
-            return False
-
-    def adjust_leverage(self, pair: str, side: str):
-        """
-        Podešavanje leverage-a i margin mode-a na exchange-u
-        """
-        try:
-            exchange = self.dp._exchange
-            leverage = int(self.leverage_num.value)
-            margin_mode = str(self.margin_mode.value).lower()
-
-            # Postavi margin mode (isolated/cross)
-            exchange.set_margin_mode(margin_mode, pair)
-
-            # Postavi leverage
-            exchange.set_leverage(leverage, pair)
-
-            print(f"✅ Uspešno postavljen {margin_mode} margin i {leverage}x leverage za {pair}")
-
-        except Exception as e:
-            print(f"⚠️ Greška pri podešavanju leverage-a za {pair}: {str(e)}")
-            raise
-
-    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Izlaz iz LONG-a
-        dataframe.loc[
-            (dataframe['reverse_hammer'] == True) &
-            ((dataframe['reverse_hammer_5m'] == True) | (dataframe['reverse_hammer_1m'] == True)),
-            'exit_long'] = 1
-
-        # Izlaz iz SHORT-a
-        dataframe.loc[
-            (dataframe['hammer'] == True) &
-            ((dataframe['hammer_5m'] == True) | (dataframe['hammer_1m'] == True)),
-            'exit_short'] = 1
-
+        print(f"Greška u populate_entry_trend: {str(e)}")
         return dataframe
 
-    def leverage(self, pair: str, current_time: datetime, current_rate: float,
-                 proposed_leverage: float, max_leverage: float, side: str, **kwargs) -> float:
-        """
-        Dinamičko podešavanje leverage-a za futures trading
-        """
-        # Proveri da li pair podržava leverage
-        if "USDT" not in pair:
-            return 1.0  # Za spot parove
 
-        # Dinamički leverage based na volatilnosti
+def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
+                        time_in_force: str, current_time: datetime, entry_tag: str,
+                        side: str, **kwargs) -> bool:
+    """
+    Potvrda trade-a sa podešavanjem leverage-a
+    """
+    try:
+        # Provera osnovnih uslova
         dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-        if len(dataframe) < 20:
-            return min(3.0, max_leverage)
+        last_candle = dataframe.iloc[-1].squeeze()
 
-        # Izračunaj ATR za volatilnost
-        atr = ta.ATR(dataframe, timeperiod=14).iloc[-1]
-        current_price = dataframe['close'].iloc[-1]
-        atr_pct = (atr / current_price) * 100
+        if not all(col in last_candle for col in ['dc_upper', 'adx', 'rsi']):
+            return False
 
-        # Podesi leverage based na volatilnosti
-        if atr_pct < 1.5:
-            leverage = min(5.0, max_leverage)
-        elif atr_pct < 3.0:
-            leverage = min(3.0, max_leverage)
+        # Podesi leverage prema strategiji
+        self.adjust_leverage(pair, side)
+
+        # Dodatne provere
+        if side == 'long':
+            if not (last_candle['close'] > last_candle['dc_upper'] and
+                    last_candle['adx'] > float(self.adx_threshold.value)):
+                return False
         else:
-            leverage = min(1.5, max_leverage)
+            if not (last_candle['close'] > last_candle['bb_upper'] and
+                    last_candle['rsi'] > float(self.rsi_sell.value)):
+                return False
 
-        return leverage
+        return True
+
+    except Exception as e:
+        print(f"Greška u confirm_trade_entry: {e}")
+        return False
+
+
+def leverage(self, pair: str, current_time: datetime, current_rate: float,
+             proposed_leverage: float, max_leverage: float, side: str, **kwargs) -> float:
+    if not hasattr(self, 'leverage_num'):
+        self.leverage_num = 3  # Default vrednost
+    return min(self.leverage_num, max_leverage)
+
+
+def adjust_leverage(self, pair: str, side: str):
+    try:
+        leverage = self.leverage(pair, datetime.now(), 0, 0, 25, side)
+        self.dp._exchange.set_margin_mode('isolated', pair)
+        self.dp._exchange.set_leverage(leverage, pair)
+        print(f"Leverage postavljen na {leverage}x za {pair}")
+    except Exception as e:
+        print(f"Greška pri podešavanju leverage-a: {e}")
+
+
+def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+    # Izlaz iz LONG-a
+    dataframe.loc[
+        (dataframe['reverse_hammer'] == True) &
+        ((dataframe['reverse_hammer_5m'] == True) | (dataframe['reverse_hammer_1m'] == True)),
+        'exit_long'] = 1
+
+    # Izlaz iz SHORT-a
+    dataframe.loc[
+        (dataframe['hammer'] == True) &
+        ((dataframe['hammer_5m'] == True) | (dataframe['hammer_1m'] == True)),
+        'exit_short'] = 1
+
+    return dataframe
