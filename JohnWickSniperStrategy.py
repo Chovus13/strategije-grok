@@ -1,11 +1,11 @@
-import numpy as np
+=import numpy as np
 import pandas as pd
 from pandas import DataFrame
 import talib
 from freqtrade.strategy import IStrategy, merge_informative_pair
 from freqtrade.strategy import CategoricalParameter, DecimalParameter, IntParameter
 from datetime import datetime
-
+# from technical.indicators import donchian
 
 class JohnWickSniperStrategy(IStrategy):
     """
@@ -56,13 +56,11 @@ class JohnWickSniperStrategy(IStrategy):
             dataframe['dc_lower'] = donchian_channel['lower']
 
             # ADX za snagu trenda
-            dataframe['adx'] = talib.ADX(dataframe['high'], dataframe['low'], dataframe['close'],
-                                         timeperiod=int(self.adx_period.value))
+            dataframe['adx'] = talib.ADX(dataframe['high'], dataframe['low'], dataframe['close'], timeperiod=int(self.adx_period.value))
 
             # Bollinger Bands za SHORT
             dataframe['bb_upper'], dataframe['bb_middle'], dataframe['bb_lower'] = talib.BBANDS(
-                dataframe['close'], timeperiod=int(self.bb_period.value), nbdevup=self.bb_std.value,
-                nbdevdn=self.bb_std.value
+                dataframe['close'], timeperiod=int(self.bb_period.value), nbdevup=self.bb_std.value, nbdevdn=self.bb_std.value
             )
 
             # RSI za prekupljenost
@@ -74,11 +72,9 @@ class JohnWickSniperStrategy(IStrategy):
 
             # Hammer i Reverse Hammer na 5m i 1m (koristi informativne podatke)
             dataframe['hammer_5m'] = self.detect_hammer(dataframe.loc[:, (slice(None), "5m")].droplevel(1))
-            dataframe['reverse_hammer_5m'] = self.detect_reverse_hammer(
-                dataframe.loc[:, (slice(None), "5m")].droplevel(1))
+            dataframe['reverse_hammer_5m'] = self.detect_reverse_hammer(dataframe.loc[:, (slice(None), "5m")].droplevel(1))
             dataframe['hammer_1m'] = self.detect_hammer(dataframe.loc[:, (slice(None), "1m")].droplevel(1))
-            dataframe['reverse_hammer_1m'] = self.detect_reverse_hammer(
-                dataframe.loc[:, (slice(None), "1m")].droplevel(1))
+            dataframe['reverse_hammer_1m'] = self.detect_reverse_hammer(dataframe.loc[:, (slice(None), "1m")].droplevel(1))
 
             return dataframe
 
@@ -90,20 +86,16 @@ class JohnWickSniperStrategy(IStrategy):
     def detect_hammer(dataframe: DataFrame) -> pd.Series:
         """Detektuje Hammer svijeću (bullish) kao statičku metodu."""
         body = abs(dataframe['close'] - dataframe['open'])
-        lower_wick = dataframe['open'].where(dataframe['close'] > dataframe['open'], dataframe['close']) - dataframe[
-            'low']
-        upper_wick = dataframe['high'] - dataframe['close'].where(dataframe['close'] > dataframe['open'],
-                                                                  dataframe['open'])
+        lower_wick = dataframe['open'].where(dataframe['close'] > dataframe['open'], dataframe['close']) - dataframe['low']
+        upper_wick = dataframe['high'] - dataframe['close'].where(dataframe['close'] > dataframe['open'], dataframe['open'])
         return (lower_wick > 2 * body) & (upper_wick < 0.5 * body) & (dataframe['close'] > dataframe['open'])
 
     @staticmethod
     def detect_reverse_hammer(dataframe: DataFrame) -> pd.Series:
         """Detektuje Reverse Hammer svijeću (bearish) kao statičku metodu."""
         body = abs(dataframe['close'] - dataframe['open'])
-        upper_wick = dataframe['high'] - dataframe['close'].where(dataframe['close'] > dataframe['open'],
-                                                                  dataframe['open'])
-        lower_wick = dataframe['open'].where(dataframe['close'] > dataframe['open'], dataframe['close']) - dataframe[
-            'low']
+        upper_wick = dataframe['high'] - dataframe['close'].where(dataframe['close'] > dataframe['open'], dataframe['open'])
+        lower_wick = dataframe['open'].where(dataframe['close'] > dataframe['open'], dataframe['close']) - dataframe['low']
         return (upper_wick > 2 * body) & (lower_wick < 0.5 * body) & (dataframe['close'] < dataframe['open'])
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -113,20 +105,20 @@ class JohnWickSniperStrategy(IStrategy):
         # LONG: Breakout + Hammer potvrda
         dataframe.loc[
             (
-                    (dataframe['close'] > dataframe['dc_upper'])
-                    & (dataframe['adx'] > self.adx_threshold.value)
-                    & (dataframe['hammer'])
-                    & ((dataframe['hammer_5m']) | (dataframe['hammer_1m']))
+                (dataframe['close'] > dataframe['dc_upper'])
+                & (dataframe['adx'] > self.adx_threshold.value)
+                & (dataframe['hammer'])
+                & ((dataframe['hammer_5m']) | (dataframe['hammer_1m']))
             ),
             'enter_long'] = 1
 
         # SHORT: Mean Reversion + Reverse Hammer potvrda
         dataframe.loc[
             (
-                    (dataframe['close'] > dataframe['bb_upper'])
-                    & (dataframe['rsi'] > self.rsi_sell.value)
-                    & (dataframe['reverse_hammer'])
-                    & ((dataframe['reverse_hammer_5m']) | (dataframe['reverse_hammer_1m']))
+                (dataframe['close'] > dataframe['bb_upper'])
+                & (dataframe['rsi'] > self.rsi_sell.value)
+                & (dataframe['reverse_hammer'])
+                & ((dataframe['reverse_hammer_5m']) | (dataframe['reverse_hammer_1m']))
             ),
             'enter_short'] = 1
 
@@ -139,16 +131,16 @@ class JohnWickSniperStrategy(IStrategy):
         # Izlaz iz LONG-a
         dataframe.loc[
             (
-                    (dataframe['reverse_hammer'])
-                    & ((dataframe['reverse_hammer_5m']) | (dataframe['reverse_hammer_1m']))
+                (dataframe['reverse_hammer'])
+                & ((dataframe['reverse_hammer_5m']) | (dataframe['reverse_hammer_1m']))
             ),
             'exit_long'] = 1
 
         # Izlaz iz SHORT-a
         dataframe.loc[
             (
-                    (dataframe['hammer'])
-                    & ((dataframe['hammer_5m']) | (dataframe['hammer_1m']))
+                (dataframe['hammer'])
+                & ((dataframe['hammer_5m']) | (dataframe['hammer_1m']))
             ),
             'exit_short'] = 1
 
@@ -160,7 +152,7 @@ class JohnWickSniperStrategy(IStrategy):
         return 3.0
 
     def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
-                            time_in_force: str, current_time: datetime, **kwargs) -> bool:
+                           time_in_force: str, current_time: datetime, **kwargs) -> bool:
         """Provjerava valjanost ulaza u trejd."""
         try:
             return True
