@@ -2,25 +2,27 @@ import numpy as np
 import pandas as pd
 from pandas import DataFrame
 import talib
-from freqtrade.strategy import IStrategy
+from freqtrade.strategy import IStrategy, merge_informative_pair
 from freqtrade.strategy import CategoricalParameter, DecimalParameter, IntParameter
+from freqtrade.strategy import StoplossGuard
 from technical.indicators import donchian
+from datetime import datetime
 
 
 class JohnWickSniperStrategy(IStrategy):
-    """
-    Unaprijeđena verzija JohnWickSniper strategije s ATR stop-loss-om i Volume Spike potvrdom.
-    Radi na 15m timeframe-u, koristi 5m/1m za potvrdu, Hammer/Reverse Hammer svijeće,
-    Donchian+ADX za LONG, Bollinger+RSI za SHORT.
-    """
+    #
 
-    # Parametri strategije
+    # Osnovni parametri
+
     timeframe = "15m"
+    informative_timeframes = ["5m", "1m"]
+
     minimal_roi = {"0": 0.02}  # 2% ROI
-    stoploss = -0.015  # Početni fiksni stop-loss
+    stoploss = -0.015  # Fiksni stop-loss od 1.5%
+
     trailing_stop = True
-    trailing_stop_positive = 0.01
-    trailing_stop_positive_offset = 0.015
+    trailing_stop_positive = 0.01  # 1% pozitivni offset
+    trailing_stop_positive_offset = 0.015  # 1.5% za pokretanje trailing stop-a
 
     # Optimizirani parametri
     donchian_period = IntParameter(10, 30, default=20, space="buy")
@@ -30,14 +32,25 @@ class JohnWickSniperStrategy(IStrategy):
     bb_std = DecimalParameter(1.5, 3.0, default=2.0, space="sell")
     rsi_period = IntParameter(10, 20, default=14, space="sell")
     rsi_sell = DecimalParameter(60, 80, default=70, space="sell")
-    atr_period = IntParameter(10, 20, default=14, space="buy_sell")
-    volume_spike_factor = DecimalParameter(1.5, 3.0, default=2.0, space="buy_sell")
+
+    def informative_pairs(self):
+        """
+        Definiše informativne timeframe-ove za 5m i 1m.
+        """
+        pairs = self.dp.current_whitelist()
+        informative_pairs = [(pair, "5m") for pair in pairs] + [(pair, "1m") for pair in pairs]
+        return informative_pairs
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         """
-        Dodaje tehničke indikatore u dataframe, uključujući ATR i Volume Spike.
+        Dodaje tehničke indikatore u dataframe.
         """
         try:
+            # Informative dataframe-ovi za 5m i 1m
+            for timeframe in self.informative_timeframes:
+                informative = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe=timeframe)
+                dataframe = merge_informative_pair(dataframe, informative, timeframe, 1, ffill=True)
+
             # Donchian Channel za LONG
             donchian_channel = donchian(dataframe, period=self.donchian_period.value)
             dataframe['dc_upper'] = donchian_channel['upper']
@@ -56,46 +69,25 @@ class JohnWickSniperStrategy(IStrategy):
             # RSI za prekupljenost
             dataframe['rsi'] = talib.RSI(dataframe['close'], timeperiod=self.rsi_period.value)
 
-            # ATR za dinamički stop-loss
-            dataframe['atr'] = talib.ATR(dataframe['high'], dataframe['low'], dataframe['close'],
-                                         timeperiod=self.atr_period.value)
-
-            # Volume Spike (volumen veći od proseka za faktor)
-            dataframe['vol_avg'] = dataframe['volume'].rolling(window=20).mean()
-            dataframe['volume_spike'] = dataframe['volume'] > (dataframe['vol_avg'] * self.volume_spike_factor.value)
-
-            # Hammer i Reverse Hammer svijeće
+            # Hammer i Reverse Hammer svijeće na 15m
             dataframe['hammer'] = self.detect_hammer(dataframe)
             dataframe['reverse_hammer'] = self.detect_reverse_hammer(dataframe)
 
-            # Dohvati 5m i 1m podatke
-            dataframe_5m = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe="5m")
-            dataframe_1m = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe="1m")
+            # Hammer i Reverse Hammer na 5m i 1m
+            dataframe['hammer_5m'] = self.detect_hammer(dataframe.select_plottable().copy())
+            dataframe['reverse_hammer_5m'] = self.detect_reverse_hammer(dataframe.select_plottable().copy())
+            dataframe['hammer_1m'] = self.detect_hammer(dataframe.select_plottable().copy())
+            dataframe['reverse_hammer_1m'] = self.detect_reverse_hammer(dataframe.select_plottable().copy())
 
-            dataframe_5m['hammer_5m'] = self.detect_hammer(dataframe_5m)
-            dataframe_5m['reverse_hammer_5m'] = self.detect_reverse_hammer(dataframe_5m)
-            dataframe_1m['hammer_1m'] = self.detect_hammer(dataframe_1m)
-            dataframe_1m['reverse_hammer_1m'] = self.detect_reverse_hammer(dataframe_1m)
-
-            # Resample na 15m
-            dataframe = dataframe.merge(
-                dataframe_5m[['date', 'hammer_5m', 'reverse_hammer_5m']].set_index('date'),
-                how='left', left_index=True, right_index=True
-            )
-            dataframe = dataframe.merge(
-                dataframe_1m[['date', 'hammer_1m', 'reverse_hammer_1m']].set_index('date'),
-                how='left', left_index=True, right_index=True
-            )
-
-            dataframe.fillna(method='ffill', inplace=True)
             return dataframe
 
         except Exception as e:
             print(f"Greška u populate_indicators: {e}")
             return dataframe
 
-    def detect_hammer(self, dataframe: DataFrame) -> pd.Series:
-        """Detektuje Hammer svijeću (bullish)."""
+    # @staticmethod
+    def detect_hammer(dataframe: DataFrame) -> pd.Series:
+        """Detektuje Hammer svijeću (bullish) kao statičku metodu."""
         body = abs(dataframe['close'] - dataframe['open'])
         lower_wick = dataframe['open'].where(dataframe['close'] > dataframe['open'], dataframe['close']) - dataframe[
             'low']
@@ -103,8 +95,9 @@ class JohnWickSniperStrategy(IStrategy):
                                                                   dataframe['open'])
         return (lower_wick > 2 * body) & (upper_wick < 0.5 * body) & (dataframe['close'] > dataframe['open'])
 
-    def detect_reverse_hammer(self, dataframe: DataFrame) -> pd.Series:
-        """Detektuje Reverse Hammer svijeću (bearish)."""
+    # @staticmethod
+    def detect_reverse_hammer(dataframe: DataFrame) -> pd.Series:
+        """Detektuje Reverse Hammer svijeću (bearish) kao statičku metodu."""
         body = abs(dataframe['close'] - dataframe['open'])
         upper_wick = dataframe['high'] - dataframe['close'].where(dataframe['close'] > dataframe['open'],
                                                                   dataframe['open'])
@@ -116,25 +109,23 @@ class JohnWickSniperStrategy(IStrategy):
         """
         Uslovi za ulaz u LONG i SHORT pozicije.
         """
-        # LONG: Breakout + Volume Spike
+        # LONG: Breakout + Hammer potvrda
         dataframe.loc[
             (
                     (dataframe['close'] > dataframe['dc_upper'])
                     & (dataframe['adx'] > self.adx_threshold.value)
                     & (dataframe['hammer'])
-                    & (dataframe['hammer_5m'] | dataframe['hammer_1m'])
-                    & (dataframe['volume_spike'])
+                    & ((dataframe['hammer_5m']) | (dataframe['hammer_1m']))
             ),
             'enter_long'] = 1
 
-        # SHORT: Mean Reversion + Volume Spike
+        # SHORT: Mean Reversion + Reverse Hammer potvrda
         dataframe.loc[
             (
                     (dataframe['close'] > dataframe['bb_upper'])
                     & (dataframe['rsi'] > self.rsi_sell.value)
                     & (dataframe['reverse_hammer'])
-                    & (dataframe['reverse_hammer_5m'] | dataframe['reverse_hammer_1m'])
-                    & (dataframe['volume_spike'])
+                    & ((dataframe['reverse_hammer_5m']) | (dataframe['reverse_hammer_1m']))
             ),
             'enter_short'] = 1
 
@@ -148,7 +139,7 @@ class JohnWickSniperStrategy(IStrategy):
         dataframe.loc[
             (
                     (dataframe['reverse_hammer'])
-                    & (dataframe['reverse_hammer_5m'] | dataframe['reverse_hammer_1m'])
+                    & ((dataframe['reverse_hammer_5m']) | (dataframe['reverse_hammer_1m']))
             ),
             'exit_long'] = 1
 
@@ -156,39 +147,27 @@ class JohnWickSniperStrategy(IStrategy):
         dataframe.loc[
             (
                     (dataframe['hammer'])
-                    & (dataframe['hammer_5m'] | dataframe['hammer_1m'])
+                    & ((dataframe['hammer_5m']) | (dataframe['hammer_1m']))
             ),
             'exit_short'] = 1
 
         return dataframe
 
-    def custom_stoploss(self, pair: str, trade: 'Trade', current_time: 'datetime',
-                        current_rate: float, current_profit: float, **kwargs) -> float:
-        """
-        Dinamički stop-loss baziran na ATR-u.
-        """
-        try:
-            dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-            last_candle = dataframe.iloc[-1]
-            atr = last_candle['atr']
-            # Stop-loss na 2x ATR ispod cijene ulaza
-            stoploss_price = trade.open_rate - (2 * atr)
-            stoploss_percentage = (stoploss_price - current_rate) / current_rate
-            return stoploss_percentage
-        except Exception as e:
-            print(f"Greška u custom_stoploss: {e}")
-            return self.stoploss
-
-    def leverage(self, pair: str, current_time: 'datetime', current_rate: float,
+    def leverage(self, pair: str, current_time: datetime, current_rate: float,
                  proposed_leverage: float, max_leverage: float, side: str, **kwargs) -> float:
-        """Postavlja leverage na 3x."""
+        """Postavlja leverage na 3x za scalping."""
         return 3.0
 
     def confirm_trade_entry(self, pair: str, order_type: str, amount: float, rate: float,
-                            time_in_force: str, current_time: 'datetime', **kwargs) -> bool:
+                            time_in_force: str, current_time: datetime, **kwargs) -> bool:
         """Provjerava valjanost ulaza u trejd."""
         try:
             return True
         except Exception as e:
             print(f"Greška u confirm_trade_entry: {e}")
             return False
+
+# Dodaj logger ako želiš (opciono za V1)
+# import logging
+
+# logger = logging.getLogger(__name__)
