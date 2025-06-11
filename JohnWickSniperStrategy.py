@@ -4,7 +4,6 @@ from pandas import DataFrame
 import talib
 from freqtrade.strategy import IStrategy, merge_informative_pair
 from freqtrade.strategy import CategoricalParameter, DecimalParameter, IntParameter
-from technical.indicators import donchian
 from datetime import datetime
 
 
