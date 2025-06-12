@@ -52,85 +52,152 @@ class JohnWickSniperStrategy(IStrategy):
     # informative_pairs = [(pair, "5m") for pair in pairs] + [(pair, "1m") for pair in pairs]
     # return informative_pairs
 
+    # def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+    #     # Informative dataframe-ovi za 5m i 1m
+    #     # Ova logika ostaje ista
+    #     for timeframe in self.informative_timeframes:
+    #         informative = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe=timeframe)
+    #         # Ovde dodajemo sufiks da bismo razlikovali kolone (npr. close_5m)
+    #         # Ovo je dobra praksa, ali merge_informative_pair to radi automatski
+    #         dataframe = merge_informative_pair(dataframe, informative, self.timeframe, timeframe, ffill=True)
+    #
+    #         # Donchian Channel - ISPRAVLJENO KORIŠĆENJEM PANDAS-TA
+    #         # pta.donchian() vraća DataFrame sa kolonama npr. 'DCU_20', 'DCL_20'
+    #         # Moramo ih preimenovati ili direktno dodeliti.
+    #         donchian_df = pta.donchian(high=dataframe['high'], low=dataframe['low'], close=dataframe['close'],
+    #                                    length=self.donchian_period.value)
+    #
+    #         # Nazivi kolona koje generiše pandas-ta zavise od perioda (npr. DCU_20)
+    #         # Zato koristimo f-string da dinamički kreiramo naziv.
+    #         upper_channel_name = f'DCU_{self.donchian_period.value}'
+    #         lower_channel_name = f'DCL_{self.donchian_period.value}'
+    #
+    #         # Dodajemo kolone u glavni dataframe sa nazivima koje strategija očekuje
+    #         dataframe['dc_upper'] = donchian_df[upper_channel_name]
+    #         dataframe['dc_lower'] = donchian_df[lower_channel_name]
+    #
+    #         # return dataframe
+    #         # if dataframe['dc_upper'].isna().all() or dataframe['dc_lower'].isna().all():
+    #         # print(f"WARNING: Donchian Channels nisu ispravno izračunati za {metadata['pair']}")
+    #
+    #         # ADX za snagu trenda
+    #         dataframe['adx'] = talib.ADX(dataframe['high'], dataframe['low'], dataframe['close'],
+    #                                      timeperiod=self.adx_period.value)
+    #
+    #         # Bollinger Bands za SHORT
+    #         dataframe['bb_upper'], dataframe['bb_middle'], dataframe['bb_lower'] = talib.BBANDS(
+    #             dataframe['close'], timeperiod=self.bb_period.value, nbdevup=self.bb_std.value,
+    #             nbdevdn=self.bb_std.value
+    #         )
+    #
+    #         # RSI za prekupljenost
+    #         dataframe['rsi'] = talib.RSI(dataframe['close'], timeperiod=self.rsi_period.value)
+    #
+    #         # ATR za dinamički stop-loss
+    #         dataframe['atr'] = talib.ATR(dataframe['high'], dataframe['low'], dataframe['close'],
+    #                                      timeperiod=self.atr_period.value)
+    #
+    #         # Volume Spike (volumen veći od proseka za faktor)
+    #         dataframe['vol_avg'] = dataframe['volume'].rolling(window=20).mean()
+    #         dataframe['volume_spike'] = dataframe['volume'] > (dataframe['vol_avg'] * self.volume_spike_factor.value)
+    #
+    #         # Hammer i Reverse Hammer svijeće
+    #         dataframe['hammer'] = self.detect_hammer(dataframe)
+    #         dataframe['reverse_hammer'] = self.detect_reverse_hammer(dataframe)
+    #
+    #         # Dohvati 5m i 1m podatke
+    #         dataframe_5m = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe="5m")
+    #         dataframe_1m = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe="1m")
+    #
+    #         dataframe_5m['hammer_5m'] = self.detect_hammer(dataframe_5m)
+    #         dataframe_5m['reverse_hammer_5m'] = self.detect_reverse_hammer(dataframe_5m)
+    #         dataframe_1m['hammer_1m'] = self.detect_hammer(dataframe_1m)
+    #         dataframe_1m['reverse_hammer_1m'] = self.detect_reverse_hammer(dataframe_1m)
+    #
+    #         # Resample na 15m
+    #         dataframe = dataframe.merge(
+    #             dataframe_5m[['date', 'hammer_5m', 'reverse_hammer_5m']].set_index('date'),
+    #             how='left', left_index=True, right_index=True
+    #         )
+    #         dataframe = dataframe.merge(
+    #             dataframe_1m[['date', 'hammer_1m', 'reverse_hammer_1m']].set_index('date'),
+    #             how='left', left_index=True, right_index=True
+    #         )
+    #
+    #         dataframe.fillna(method='ffill', inplace=True)
+    #
+    #         return dataframe
+    #         # if dataframe['dc_upper'].isna().all() or dataframe['dc_lower'].isna().all():
+    #         print(f"WARNING: Donchian Channels nisu ispravno izračunati za {metadata['pair']}")
+    #
+    #         return dataframe
+    # Ne zaboravite da importujete pandas na vrhu fajla ako već niste
+    # import pandas as pd
+
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        # Informative dataframe-ovi za 5m i 1m
-        # Ova logika ostaje ista
-        for timeframe in self.informative_timeframes:
-            informative = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe=timeframe)
-            # Ovde dodajemo sufiks da bismo razlikovali kolone (npr. close_5m)
-            # Ovo je dobra praksa, ali merge_informative_pair to radi automatski
-            dataframe = merge_informative_pair(dataframe, informative, self.timeframe, timeframe, ffill=True)
+        # --- KORAK 1: Izračunavanje indikatora na informativnim timeframe-ovima ---
 
-            # Donchian Channel - ISPRAVLJENO KORIŠĆENJEM PANDAS-TA
-            # pta.donchian() vraća DataFrame sa kolonama npr. 'DCU_20', 'DCL_20'
-            # Moramo ih preimenovati ili direktno dodeliti.
-            donchian_df = pta.donchian(high=dataframe['high'], low=dataframe['low'], close=dataframe['close'],
-                                       length=self.donchian_period.value)
+        for timeframe_inf in self.informative_timeframes:
+            # Preuzimanje informativnog dataframe-a (npr. za '5m' ili '1m')
+            informative = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe=timeframe_inf)
 
-            # Nazivi kolona koje generiše pandas-ta zavise od perioda (npr. DCU_20)
-            # Zato koristimo f-string da dinamički kreiramo naziv.
-            upper_channel_name = f'DCU_{self.donchian_period.value}'
-            lower_channel_name = f'DCL_{self.donchian_period.value}'
+            # Na ovom informativnom dataframe-u izračunavamo indikatore koji su nam potrebni
+            # Primer za hammer sveću - prilagodite ovo vašim indikatorima
+            informative['hammer'] = self.heikin_ashi(informative).apply(
+                lambda x: 1 if (x['ha_high'] - x['ha_low']) > 3 * abs(x['ha_open'] - x['ha_close']) and
+                               (x['ha_close'] - x['ha_low']) / (0.001 + x['ha_high'] - x['ha_low']) > 0.6 and
+                               (x['ha_open'] - x['ha_low']) / (0.001 + x['ha_high'] - x['ha_low']) > 0.6
+                else 0, axis=1
+            )
+            # Primer za volume spike - prilagodite ovo vašim indikatorima
+            informative['volume_spike'] = (informative['volume'] > informative['volume'].rolling(20).mean() * 2).astype(
+                int)
 
-            # Dodajemo kolone u glavni dataframe sa nazivima koje strategija očekuje
-            dataframe['dc_upper'] = donchian_df[upper_channel_name]
-            dataframe['dc_lower'] = donchian_df[lower_channel_name]
+            # Preimenovanje kolona da bismo znali sa kog su timeframe-a
+            # Npr. 'hammer' postaje 'hammer_5m'
+            informative.rename(columns={
+                'hammer': f'hammer_{timeframe_inf}',
+                'volume_spike': f'volume_spike_{timeframe_inf}'
+            }, inplace=True)
 
-            # return dataframe
-            # if dataframe['dc_upper'].isna().all() or dataframe['dc_lower'].isna().all():
-            # print(f"WARNING: Donchian Channels nisu ispravno izračunati za {metadata['pair']}")
-
-            # ADX za snagu trenda
-            dataframe['adx'] = talib.ADX(dataframe['high'], dataframe['low'], dataframe['close'],
-                                         timeperiod=self.adx_period.value)
-
-            # Bollinger Bands za SHORT
-            dataframe['bb_upper'], dataframe['bb_middle'], dataframe['bb_lower'] = talib.BBANDS(
-                dataframe['close'], timeperiod=self.bb_period.value, nbdevup=self.bb_std.value,
-                nbdevdn=self.bb_std.value
+            # --- KORAK 2: Ispravno spajanje samo potrebnih kolona ---
+            # Koristimo merge_asof da bezbedno dodamo signale iz bržeg u sporiji timeframe
+            # On pronalazi poslednju dostupnu vrednost iz 'informative' za svaku sveću u 'dataframe'
+            dataframe = pd.merge_asof(
+                dataframe,
+                informative[[
+                    'date',
+                    f'hammer_{timeframe_inf}',
+                    f'volume_spike_{timeframe_inf}'
+                ]],
+                on='date',
+                direction='backward'
             )
 
-            # RSI za prekupljenost
-            dataframe['rsi'] = talib.RSI(dataframe['close'], timeperiod=self.rsi_period.value)
+        # --- KORAK 3: Izračunavanje indikatora na glavnom (15m) timeframe-u ---
+        # Sada kada su informativni podaci spojeni, računamo indikatore za 15m
 
-            # ATR za dinamički stop-loss
-            dataframe['atr'] = talib.ATR(dataframe['high'], dataframe['low'], dataframe['close'],
-                                         timeperiod=self.atr_period.value)
+        # Donchian Channel za LONG
+        donchian_df = pta.donchian(high=dataframe['high'], low=dataframe['low'], close=dataframe['close'],
+                                   length=self.donchian_period.value)
+        upper_channel_name = f'DCU_{self.donchian_period.value}'
+        lower_channel_name = f'DCL_{self.donchian_period.value}'
+        dataframe['dc_upper'] = donchian_df[upper_channel_name]
+        dataframe['dc_lower'] = donchian_df[lower_channel_name]
 
-            # Volume Spike (volumen veći od proseka za faktor)
-            dataframe['vol_avg'] = dataframe['volume'].rolling(window=20).mean()
-            dataframe['volume_spike'] = dataframe['volume'] > (dataframe['vol_avg'] * self.volume_spike_factor.value)
+        # ADX za snagu trenda
+        dataframe['adx'] = ta.ADX(dataframe, timeperiod=self.adx_period.value)
 
-            # Hammer i Reverse Hammer svijeće
-            dataframe['hammer'] = self.detect_hammer(dataframe)
-            dataframe['reverse_hammer'] = self.detect_reverse_hammer(dataframe)
+        # Hammer i Volume spike na glavnom timeframe-u
+        dataframe['hammer'] = self.heikin_ashi(dataframe).apply(
+            lambda x: 1 if (x['ha_high'] - x['ha_low']) > 3 * abs(x['ha_open'] - x['ha_close']) and
+                           (x['ha_close'] - x['ha_low']) / (0.001 + x['ha_high'] - x['ha_low']) > 0.6 and
+                           (x['ha_open'] - x['ha_low']) / (0.001 + x['ha_high'] - x['ha_low']) > 0.6
+            else 0, axis=1
+        )
+        dataframe['volume_spike'] = (dataframe['volume'] > dataframe['volume'].rolling(20).mean() * 2).astype(int)
 
-            # Dohvati 5m i 1m podatke
-            dataframe_5m = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe="5m")
-            dataframe_1m = self.dp.get_pair_dataframe(pair=metadata['pair'], timeframe="1m")
-
-            dataframe_5m['hammer_5m'] = self.detect_hammer(dataframe_5m)
-            dataframe_5m['reverse_hammer_5m'] = self.detect_reverse_hammer(dataframe_5m)
-            dataframe_1m['hammer_1m'] = self.detect_hammer(dataframe_1m)
-            dataframe_1m['reverse_hammer_1m'] = self.detect_reverse_hammer(dataframe_1m)
-
-            # Resample na 15m
-            dataframe = dataframe.merge(
-                dataframe_5m[['date', 'hammer_5m', 'reverse_hammer_5m']].set_index('date'),
-                how='left', left_index=True, right_index=True
-            )
-            dataframe = dataframe.merge(
-                dataframe_1m[['date', 'hammer_1m', 'reverse_hammer_1m']].set_index('date'),
-                how='left', left_index=True, right_index=True
-            )
-
-            dataframe.fillna(method='ffill', inplace=True)
-
-            return dataframe
-            # if dataframe['dc_upper'].isna().all() or dataframe['dc_lower'].isna().all():
-            print(f"WARNING: Donchian Channels nisu ispravno izračunati za {metadata['pair']}")
-
-            return dataframe
+        return dataframe
 
     def detect_hammer(self, dataframe: DataFrame) -> pd.Series:
         """Detektuje Hammer svijeću (bullish)."""
